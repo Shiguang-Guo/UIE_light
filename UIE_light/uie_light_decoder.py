@@ -197,6 +197,8 @@ class UIE_Light_Decoder(TransformerDecoder):
         else:
             x = (self.ngram_input_embed.weight[0] + predicting_stream_pos_embed).transpose(0, 1)
 
+        # x += self.embed_tokens(prev_output_tokens)
+
         attn = None
         inner_states = [x]
 

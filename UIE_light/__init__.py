@@ -15,3 +15,4 @@ from . import EventDictionary
 from . import bang_NAR_generator
 from . import uie_light
 from . import uie_light_decoder
+from . import UIELightGenerator

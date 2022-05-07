@@ -13,7 +13,7 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from torch import Tensor
 
 from UIE_light.bang_NAR_generator import BANGNARSequenceGenerator
-from UIE_light.my_utils import RecordSchema
+from UIE_light.my_utils import RecordSchema, post_process_nar, get_extract_metrics
 
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
@@ -113,6 +113,39 @@ class UIELightLoss(FairseqCriterion):
         nll_loss = sum(l for l in nll_loss) if len(nll_loss) > 0 \
             else loss.new_tensor(0)
 
+        hypos = self.nar_generator.generate([model], sample)
+
+        src_dict = self.task.source_dictionary
+
+        tgt_list = []
+        hypo_str_list = []
+
+        for i, sample_id in enumerate(sample['id'].tolist()):
+
+            src_tokens = utils.strip_pad(sample['net_input']['src_tokens'][i, :], self.task.tgt_dict.pad())
+            target_tokens = utils.strip_pad(sample['target'][i, :], self.task.tgt_dict.pad()).int().cpu()
+
+            src_str = src_dict.string(src_tokens, None)
+            target_str = self.task.tgt_dict.string(target_tokens, None, escape_unk=True)
+
+            tgt_list.append(target_str)
+
+            # Process top predictions
+            for j, hypo in enumerate(hypos[i][:1]):
+                hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
+                    hypo_tokens=hypo['tokens'].int().cpu(),
+                    src_str=src_str,
+                    alignment=hypo['alignment'],
+                    align_dict=None,
+                    tgt_dict=self.task.target_dictionary,
+                    remove_bpe=None,
+                )
+
+            hypo_str_list.append(hypo_str)
+
+        hypo_str_list = post_process_nar(hypo_str_list)
+        results = get_extract_metrics(hypo_str_list, tgt_list, self.schema)
+
         # NOTE:
         # we don't need to use sample_size as denominator for the gradient
         # here sample_size is just used for logging
@@ -123,7 +156,7 @@ class UIELightLoss(FairseqCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["nsentences"],
             "sample_size": sample_size,
-            "f1": 0
+            'f1': results['overall-F1'],
         }
 
         for l in losses:

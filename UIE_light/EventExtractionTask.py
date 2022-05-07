@@ -9,6 +9,7 @@ from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationTask, load_langpair_dataset
 
 from UIE_light.EventDictionary import EventDictionary
+from UIE_light.UIELightGenerator import UIELightGenerator
 
 
 @register_task('EventExtraction')
