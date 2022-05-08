@@ -106,10 +106,12 @@ class EventExtractionTask(TranslationTask):
                    ignore_grad=False):
         model.train()
         sample['empty_tokens'], sample['event_only_tokens'] = self.preprocess(sample['target'])
-        loss, sample_size, logging_output = criterion(model, sample)
+        loss, sample_size, logging_output = criterion(model, sample, val=False)
         if ignore_grad:
             loss *= 0
-        optimizer.backward(loss)
+        with torch.autograd.detect_anomaly():
+            optimizer.backward(loss)
+
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
@@ -117,7 +119,7 @@ class EventExtractionTask(TranslationTask):
         sample['empty_tokens'], sample['event_only_tokens'] = self.preprocess(sample['target'])
         with torch.no_grad():
             sample['empty'], sample['event_only'] = self.preprocess(sample['target'])
-            loss, sample_size, logging_output = criterion(model, sample)
+            loss, sample_size, logging_output = criterion(model, sample, val=True)
         return loss, sample_size, logging_output
 
     def build_generator(self, args):

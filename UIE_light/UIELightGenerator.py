@@ -174,6 +174,7 @@ class UIELightGenerator(object):
             no_repeat_ngram_size=0,
             nar_max_length=-1
     ):
+        self.max_ins_len = 10
         self.len_ratio = 2
         self.pad = tgt_dict.pad()
         self.unk = tgt_dict.unk()
@@ -233,6 +234,7 @@ class UIELightGenerator(object):
             else:
                 src_lens = (~encoder_out.encoder_padding_mask).sum(1)
             max_lens = (src_lens * self.len_ratio + 2).clamp(min=10).long()
+            plc_ins_len = torch.full_like(max_lens, self.max_ins_len)
 
             prev_tokens = self.make_emptyes(sample['target'], max_lens.max())
             scores = src_tokens.new(bsz, max_lens.max()).float().fill_(0)
@@ -270,7 +272,7 @@ class UIELightGenerator(object):
                         mask_ins_score[:, :, 0] = mask_ins_score[:, :, 0] - self.eos_penalty
                     mask_ins_pred = mask_ins_score.max(-1)[1]
                     mask_ins_pred = torch.min(
-                        mask_ins_pred, max_lens[can_ins_mask, None].expand_as(mask_ins_pred)
+                        mask_ins_pred, plc_ins_len[can_ins_mask, None].expand_as(mask_ins_pred)
                     )
 
                     _tokens, _scores = _apply_ins_masks(

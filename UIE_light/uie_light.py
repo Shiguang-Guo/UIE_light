@@ -203,9 +203,11 @@ class UIELightNAR(TransformerModel):
                 include_arguments_tokens=None, **kwargs):
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
         results = {}
+        # for stagename, prev_output_tokens, tgt_tokens, NAR_flag in [
+        #     ("event", empty_tokens, event_only_tokens, self.first_stage_nar),
+        #     ("arguments", event_only_tokens, include_arguments_tokens, self.second_stage_nar)]:
         for stagename, prev_output_tokens, tgt_tokens, NAR_flag in [
-            ("event", empty_tokens, event_only_tokens, self.first_stage_nar),
-            ("arguments", event_only_tokens, include_arguments_tokens, self.second_stage_nar)]:
+            ("event", empty_tokens, event_only_tokens, self.first_stage_nar)]:
             masked_tgt_masks, masked_tgt_tokens, mask_ins_targets = _get_ins_targets(
                 prev_output_tokens, tgt_tokens, self.pad, self.unk
             )
@@ -215,6 +217,7 @@ class UIELightNAR(TransformerModel):
             mask_ins_out, _ = self.decoder.forward_mask_ins(
                 prev_output_tokens, encoder_out=encoder_out, nar_flag=NAR_flag
             )
+
             word_ins_out, _ = self.decoder.forward_word_ins(
                 masked_tgt_tokens, encoder_out=encoder_out, NAR_flag=NAR_flag
             )

@@ -191,14 +191,15 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         predicting_stream_pos_embed = self.embed_positions._forward(real_positions + 1)
 
+        x = self.embed_tokens(prev_output_tokens)
+
         # embed tokens and positions
         if self.embed_scale is not None:
-            x = (self.embed_scale * self.ngram_input_embed.weight[0] + predicting_stream_pos_embed).transpose(0, 1)
+            x += (self.embed_scale * self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
         else:
-            x = (self.ngram_input_embed.weight[0] + predicting_stream_pos_embed).transpose(0, 1)
+            x += (self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
 
-        # x += self.embed_tokens(prev_output_tokens)
-
+        x = x.transpose(0, 1)
         attn = None
         inner_states = [x]
 
@@ -338,7 +339,8 @@ class UIE_Light_Decoder(TransformerDecoder):
                                                        early_exit=self.early_exit[1], layers=self.layers_msk,
                                                        incremental_state=None, **unused)
         features_cat = torch.cat([features[:, :-1, :], features[:, 1:, :]], 2)
-        return F.linear(features_cat, self.embed_mask_ins.weight), extra['attn']
+        mask_ins_out = F.linear(features_cat, self.embed_mask_ins.weight)
+        return mask_ins_out, extra['attn']
 
     def forward_word_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=None, **unused):
         if NAR_Flag:
