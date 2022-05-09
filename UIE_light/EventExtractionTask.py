@@ -109,8 +109,7 @@ class EventExtractionTask(TranslationTask):
         loss, sample_size, logging_output = criterion(model, sample, val=False)
         if ignore_grad:
             loss *= 0
-        with torch.autograd.detect_anomaly():
-            optimizer.backward(loss)
+        optimizer.backward(loss)
 
         return loss, sample_size, logging_output
 

@@ -174,7 +174,7 @@ class UIELightNAR(TransformerModel):
         )
         parser.add_argument(
             "--early-exit",
-            default="6,6,6",
+            default="4,5,6",
             type=str,
             help="number of decoder layers before word_del, mask_ins, word_ins",
         )

@@ -25,7 +25,7 @@ class UIE_Light_Decoder(TransformerDecoder):
         super().__init__(
             args, dictionary, embed_tokens, no_encoder_attn=no_encoder_attn
         )
-        self.embed_mask_ins = Embedding(256, self.output_embed_dim * 2, None)
+        self.embed_mask_ins = Embedding(64, self.output_embed_dim * 2, None)
         self.embed_word_del = Embedding(2, self.output_embed_dim, None)
         self.early_exit = [int(i) for i in args.early_exit.split(',')]
 
