@@ -74,6 +74,25 @@ class UIE_Light_Decoder(TransformerDecoder):
             for _ in range(args.decoder_layers)
         ])
 
+        self.share_stage_layers = args.share_stage_layers
+
+        if not self.share_stage_layers:
+            self.second_stage_layers = nn.ModuleList([])
+            self.second_stage_layers.extend([
+                NgramTransformerDecoderARNARMixedLayer(
+                    1,
+                    args.decoder_embed_dim,
+                    args.decoder_ffn_embed_dim,
+                    args.decoder_attention_heads,
+                    args.dropout,
+                    args.attention_dropout,
+                    args.activation_dropout,
+                    args.activation_fn,
+
+                )
+                for _ in range(args.decoder_layers)
+            ])
+
         if not self.share_input_output_embed:
             self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), self.embed_dim))
             nn.init.normal_(self.embed_out, mean=0, std=self.embed_dim ** -0.5)
@@ -169,7 +188,8 @@ class UIE_Light_Decoder(TransformerDecoder):
         return ngram_future_mask
 
     def extract_features_NAR(
-            self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None, **unused
+            self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None,
+            stage='event', **unused
     ):
         if 'positions' in unused:
             # pretrain procedure
@@ -210,8 +230,12 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        layers = self.layers
+        if stage == 'argument' and not self.share_stage_layers:
+            layers = self.second_stage_layers
+
         # decoder layers
-        for layer in self.layers[:early_exit]:
+        for layer in layers[:early_exit]:
             x, attn = layer(
                 x,
                 encoder_out.encoder_out if encoder_out is not None else None,
@@ -235,7 +259,8 @@ class UIE_Light_Decoder(TransformerDecoder):
         return x.transpose(0, 1), {'attn': attn_list}
 
     def extract_features_AR(
-            self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None, **unused
+            self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None,
+            stage='event', **unused
     ):
         if 'positions' in unused:
             # pretrain procedure
@@ -304,8 +329,12 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        layers = self.layers
+        if stage == 'argument' and not self.share_stage_layers:
+            layers = self.second_stage_layers
+
         # decoder layers
-        for layer in self.layers[:early_exit]:
+        for layer in layers[:early_exit]:
             x, attn = layer(
                 x,
                 encoder_out.encoder_out if encoder_out is not None else None,
@@ -329,38 +358,42 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         return x_list[-1], {'attn': attn_list}
 
-    def forward_mask_ins(self, prev_output_tokens, encoder_out=None, nar_flag=None, **unused):
-        if nar_flag:
+    def forward_mask_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=True, stage='event', **unused):
+        if NAR_Flag:
             features, extra = self.extract_features_NAR(prev_output_tokens, encoder_out=encoder_out,
                                                         early_exit=self.early_exit[1], layers=self.layers_msk,
+                                                        stage=stage,
                                                         incremental_state=None, **unused)
         else:
             features, extra = self.extract_features_AR(prev_output_tokens, encoder_out=encoder_out,
                                                        early_exit=self.early_exit[1], layers=self.layers_msk,
+                                                       stage=stage,
                                                        incremental_state=None, **unused)
         features_cat = torch.cat([features[:, :-1, :], features[:, 1:, :]], 2)
         mask_ins_out = F.linear(features_cat, self.embed_mask_ins.weight)
         return mask_ins_out, extra['attn']
 
-    def forward_word_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=None, **unused):
+    def forward_word_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=True, stage='event', **unused):
         if NAR_Flag:
             features, extra = self.extract_features_NAR(prev_output_tokens, encoder_out=encoder_out,
-                                                        early_exit=self.early_exit[2], layers=self.layers,
+                                                        early_exit=self.early_exit[2], layers=self.layers, stage=stage,
                                                         incremental_state=None, **unused)
         else:
             features, extra = self.extract_features_AR(prev_output_tokens, encoder_out=encoder_out,
-                                                       early_exit=self.early_exit[2], layers=self.layers,
+                                                       early_exit=self.early_exit[2], layers=self.layers, stage=stage,
                                                        incremental_state=None, **unused)
         return self.output_layer(features), extra['attn']
 
-    def forward_word_del(self, prev_output_tokens, encoder_out=None, NAR_Flag=None, **unused):
+    def forward_word_del(self, prev_output_tokens, encoder_out=None, NAR_Flag=True, stage='event', **unused):
         if NAR_Flag:
             features, extra = self.extract_features_NAR(prev_output_tokens, encoder_out=encoder_out,
                                                         early_exit=self.early_exit[0], layers=self.layers_del,
+                                                        stage=stage,
                                                         incremental_state=None, **unused)
         else:
             features, extra = self.extract_features_AR(prev_output_tokens, encoder_out=encoder_out,
                                                        early_exit=self.early_exit[0], layers=self.layers_del,
+                                                       stage=stage,
                                                        incremental_state=None, **unused)
 
         return F.linear(features, self.embed_word_del.weight), extra['attn']

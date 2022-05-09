@@ -239,12 +239,13 @@ class UIELightGenerator(object):
             prev_tokens = self.make_emptyes(sample['target'], max_lens.max())
             scores = src_tokens.new(bsz, max_lens.max()).float().fill_(0)
 
-            for stage in ['event', 'arguments']:
+            for stage in ['event', 'argument']:
                 can_del_word = prev_tokens.ne(self.pad).sum(1) > 2
                 if can_del_word.sum() != 0:  # we cannot delete, skip
                     word_del_out, word_del_attn = model.decoder.forward_word_del(
                         _skip(prev_tokens, can_del_word),
-                        _skip_encoder_out(model.encoder, encoder_out, can_del_word)
+                        _skip_encoder_out(model.encoder, encoder_out, can_del_word),
+                        stage=stage
                     )
                     word_del_score = F.log_softmax(word_del_out, 2)
                     word_del_pred = word_del_score.max(-1)[1].bool()
@@ -265,7 +266,8 @@ class UIELightGenerator(object):
                 if can_ins_mask.sum() != 0:
                     mask_ins_out, _ = model.decoder.forward_mask_ins(
                         _skip(prev_tokens, can_ins_mask),
-                        _skip_encoder_out(model.encoder, encoder_out, can_ins_mask)
+                        _skip_encoder_out(model.encoder, encoder_out, can_ins_mask),
+                        stage=stage
                     )
                     mask_ins_score = F.log_softmax(mask_ins_out, 2)
                     if self.eos_penalty > 0.0:
@@ -291,7 +293,8 @@ class UIELightGenerator(object):
                 if can_ins_word.sum() != 0:
                     word_ins_out, word_ins_attn = model.decoder.forward_word_ins(
                         _skip(prev_tokens, can_ins_word),
-                        _skip_encoder_out(model.encoder, encoder_out, can_ins_word)
+                        _skip_encoder_out(model.encoder, encoder_out, can_ins_word),
+                        stage=stage
                     )
                     word_ins_score, word_ins_pred = F.log_softmax(word_ins_out, 2).max(-1)
                     _tokens, _scores = _apply_ins_words(
