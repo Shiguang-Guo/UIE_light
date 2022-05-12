@@ -13,16 +13,6 @@ def evaluate(schemapath, filepath):
     schema = RecordSchema.read_from_file(schemapath)
     result = {}
     for split in split_set:
-        # print("***** Evaluate {setname} set *****".format(setname=split))
-        golden_tokens = []
-        pred_tokens = []
-        # with open('/data/guoshiguang/outputs/bang/ace2005-full-ar/output_ar_pelt1.2_{0}_beam4.txt'.format(split)) as f:
-        #     for line in f.readlines():
-        #         if line.startswith('T-'):
-        #             golden_tokens.append(' '.join(line.split()[1:]).replace(' ##', ''))
-        #         if line.startswith('H-'):
-        #             pred_tokens.append(' '.join(line.split()[2:]).replace(' ##', ''))
-
         with open("{filepath}/{split}_hypo.txt".format(filepath=filepath, split=split)) as f:
             pred_tokens = f.readlines()
         with open("{filepath}/{split}_golden.txt".format(filepath=filepath, split=split)) as f:
@@ -36,6 +26,6 @@ def evaluate(schemapath, filepath):
 
 if __name__ == '__main__':
     schemapath = '/data/guoshiguang/datasets/dyiepp_ace2005_subtype_converted/raw/event.schema'
-    filepath = "/data/guoshiguang/outputs/uie_light/ace2005-full-uie-light-v7/"
+    filepath = "/data/guoshiguang/outputs/bang/ace2005-full-nar-2stages-0/second"
 
     print(evaluate(schemapath=schemapath, filepath=filepath))

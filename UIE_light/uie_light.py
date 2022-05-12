@@ -7,9 +7,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fairseq.models import register_model, register_model_architecture
-from fairseq.models.transformer import TransformerModel, TransformerEncoder
+from fairseq import utils
+from fairseq.models import (
+    FairseqEncoder,
+    register_model,
+    register_model_architecture,
+)
+from fairseq.models.transformer import TransformerModel
+from fairseq.modules import (
+    MultiheadAttention,
+    LayerNorm,
+)
+from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
+from UIE_light.learned_positional_embedding import LearnedPositionalEmbedding
 from UIE_light.uie_light_decoder import UIE_Light_Decoder
 
 DEFAULT_MAX_SOURCE_POSITIONS = 512
@@ -152,6 +163,200 @@ def _get_del_ins_targets(in_tokens, out_tokens, padding_idx):
     return word_del_targets, mask_ins_targets
 
 
+class TransformerEncoderLayer(nn.Module):
+    """
+    Implements a Transformer Encoder Layer used in BERT/XLM style pre-trained
+    models.
+    """
+
+    def __init__(
+            self,
+            embedding_dim: float = 768,
+            ffn_embedding_dim: float = 3072,
+            num_attention_heads: float = 8,
+            dropout: float = 0.1,
+            attention_dropout: float = 0.1,
+            activation_dropout: float = 0.1,
+            activation_fn: str = 'relu',
+            add_bias_kv: bool = False,
+            add_zero_attn: bool = False,
+            export: bool = False,
+    ) -> None:
+        super().__init__()
+        # Initialize parameters
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.activation_dropout = activation_dropout
+
+        # Initialize blocks
+        self.activation_fn = utils.get_activation_fn(activation_fn)
+        self.self_attn = MultiheadAttention(
+            self.embedding_dim,
+            num_attention_heads,
+            dropout=attention_dropout,
+            add_bias_kv=add_bias_kv,
+            add_zero_attn=add_zero_attn,
+            self_attention=True,
+        )
+
+        # layer norm associated with the self attention layer
+        self.self_attn_layer_norm = LayerNorm(self.embedding_dim, export=export)
+        self.fc1 = nn.Linear(self.embedding_dim, ffn_embedding_dim)
+        self.fc2 = nn.Linear(ffn_embedding_dim, self.embedding_dim)
+
+        # layer norm associated with the position wise feed-forward NN
+        self.final_layer_norm = LayerNorm(self.embedding_dim, export=export)
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            self_attn_mask: torch.Tensor = None,
+            self_attn_padding_mask: torch.Tensor = None,
+    ):
+        """
+        LayerNorm is applied either before or after the self-attention/ffn
+        modules similar to the original Transformer imlementation.
+        """
+        residual = x
+        x, attn = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            need_weights=False,
+            attn_mask=self_attn_mask,
+        )
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = residual + x
+        x = self.self_attn_layer_norm(x)
+
+        residual = x
+        x = self.activation_fn(self.fc1(x))
+        x = F.dropout(x, p=self.activation_dropout, training=self.training)
+        x = self.fc2(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = residual + x
+        x = self.final_layer_norm(x)
+        return x, attn
+
+
+class TransformerEncoder(FairseqEncoder):
+    """
+    Transformer encoder consisting of *args.encoder_layers* layers. Each layer
+    is a :class:`TransformerEncoderLayer`.
+    Args:
+        args (argparse.Namespace): parsed command-line arguments
+        dictionary (~fairseq.data.Dictionary): encoding dictionary
+        embed_tokens (torch.nn.Embedding): input embedding
+    """
+
+    def __init__(self, args, dictionary, embed_tokens):
+        super().__init__(dictionary)
+        self.register_buffer('version', torch.Tensor([3]))
+
+        self.dropout = args.dropout
+
+        embed_dim = embed_tokens.embedding_dim
+        self.padding_idx = embed_tokens.padding_idx
+        self.max_source_positions = args.max_source_positions
+
+        self.embed_tokens = embed_tokens
+        self.embed_scale = None  # math.sqrt(embed_dim)
+        self.embed_positions = LearnedPositionalEmbedding(
+            args.max_source_positions + 1 + self.padding_idx, embed_dim, self.padding_idx,
+        )
+
+        self.layers = nn.ModuleList([])
+
+        self.layers.extend([
+            TransformerEncoderLayer(
+                args.encoder_embed_dim,
+                args.encoder_ffn_embed_dim,
+                args.encoder_attention_heads,
+                args.dropout,
+                args.attention_dropout,
+                args.activation_dropout,
+                args.activation_fn,
+            )
+            for i in range(args.encoder_layers)
+        ])
+
+        self.emb_layer_norm = LayerNorm(embed_dim)
+
+        self.apply(init_bert_params)
+
+    def forward(self, src_tokens, src_lengths, **unused):
+        """
+        Args:
+            src_tokens (LongTensor): tokens in the source language of shape
+                `(batch, src_len)`
+            src_lengths (torch.LongTensor): lengths of each source sentence of
+                shape `(batch)`
+        Returns:
+            dict:
+                - **encoder_out** (Tensor): the last encoder layer's output of
+                  shape `(src_len, batch, embed_dim)`
+                - **encoder_padding_mask** (ByteTensor): the positions of
+                  padding elements of shape `(batch, src_len)`
+        """
+        # compute padding mask
+        encoder_padding_mask = src_tokens.eq(self.padding_idx)
+        if not encoder_padding_mask.any():
+            encoder_padding_mask = None
+
+        x = self.embed_tokens(src_tokens)
+        # embed tokens and positions
+        if self.embed_scale is not None:
+            x *= self.embed_scale
+
+        if self.embed_positions is not None:
+            pos_emb, real_positions = self.embed_positions(src_tokens)
+            x += pos_emb
+
+        if self.emb_layer_norm:
+            x = self.emb_layer_norm(x)
+
+        x = F.dropout(x, p=self.dropout, training=self.training)
+
+        if encoder_padding_mask is not None:
+            x *= 1 - encoder_padding_mask.unsqueeze(-1).type_as(x)
+        # B x T x C -> T x B x C
+        x = x.transpose(0, 1)
+
+        # encoder layers
+        for layer in self.layers:
+            # x, _ = layer(x, self_attn_padding_mask=encoder_padding_mask, real_positions=real_positions)
+            x, _ = layer(x, self_attn_padding_mask=encoder_padding_mask, )
+
+        return {
+            'encoder_out': x,  # T x B x C
+            'encoder_padding_mask': encoder_padding_mask,  # B x T
+        }
+
+    def reorder_encoder_out(self, encoder_out, new_order):
+        """
+        Reorder encoder output according to *new_order*.
+        Args:
+            encoder_out: output from the ``forward()`` method
+            new_order (LongTensor): desired order
+        Returns:
+            *encoder_out* rearranged according to *new_order*
+        """
+        if encoder_out['encoder_out'] is not None:
+            encoder_out['encoder_out'] = \
+                encoder_out['encoder_out'].index_select(1, new_order)
+        if encoder_out['encoder_padding_mask'] is not None:
+            encoder_out['encoder_padding_mask'] = \
+                encoder_out['encoder_padding_mask'].index_select(0, new_order)
+        return encoder_out
+
+    def max_positions(self):
+        """Maximum input length supported by the encoder."""
+        if self.embed_positions is None:
+            return self.max_source_positions
+        return min(self.max_source_positions, self.embed_positions.max_positions())
+
+
 @register_model('uie_light')
 class UIELightNAR(TransformerModel):
     def __init__(self, args, encoder, decoder):
@@ -210,7 +415,7 @@ class UIELightNAR(TransformerModel):
         results = {}
         for stagename, prev_output_tokens, tgt_tokens, NAR_flag in [
             ("event", empty_tokens, event_only_tokens, self.first_stage_nar),
-            ("arguments", event_only_tokens, include_arguments_tokens, self.second_stage_nar)]:
+            ("argument", event_only_tokens, include_arguments_tokens, self.second_stage_nar)]:
             # for stagename, prev_output_tokens, tgt_tokens, NAR_flag in [
             #     ("event", empty_tokens, event_only_tokens, self.first_stage_nar)]:
             masked_tgt_masks, masked_tgt_tokens, mask_ins_targets = _get_ins_targets(

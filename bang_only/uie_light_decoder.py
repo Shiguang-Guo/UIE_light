@@ -8,23 +8,23 @@ import math
 
 import torch
 from fairseq import utils
+from fairseq.models import FairseqIncrementalDecoder
 from fairseq.models.transformer import Embedding
-from fairseq.models.transformer import TransformerDecoder
 from fairseq.modules import LayerNorm
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from torch import nn as nn
 from torch.nn import functional as F
 
-from UIE_light.NgramTransformerDecoderARNARMixedLayer import NgramTransformerDecoderARNARMixedLayer
-from UIE_light.learned_positional_embedding import LearnedPositionalEmbedding
-from UIE_light.ngram_multihead_attention_AR_NAR_mixed import ngram_attention_bias
+from bang_only.NgramTransformerDecoderARNARMixedLayer import NgramTransformerDecoderARNARMixedLayer
+from bang_only.learned_positional_embedding import LearnedPositionalEmbedding
+from bang_only.ngram_multihead_attention_AR_NAR_mixed import ngram_attention_bias
 
 
-class UIE_Light_Decoder(TransformerDecoder):
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
-        super().__init__(
-            args, dictionary, embed_tokens, no_encoder_attn=no_encoder_attn
-        )
+class UIE_Light_Decoder(FairseqIncrementalDecoder):
+    def __init__(self, args, dictionary, embed_tokens):
+        super().__init__(dictionary)
+        self.output_embed_dim = args.decoder_output_dim
+
         self.embed_mask_ins = Embedding(64, self.output_embed_dim * 2, None)
         self.embed_word_del = Embedding(2, self.output_embed_dim, None)
         self.early_exit = [int(i) for i in args.early_exit.split(',')]
@@ -211,13 +211,11 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         predicting_stream_pos_embed = self.embed_positions._forward(real_positions + 1)
 
-        x = self.embed_tokens(prev_output_tokens)
-
         # embed tokens and positions
         if self.embed_scale is not None:
-            x += (self.embed_scale * self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
+            x = (self.embed_scale * self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
         else:
-            x += (self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
+            x = (self.ngram_input_embed.weight[0] + predicting_stream_pos_embed)
 
         x = x.transpose(0, 1)
         attn = None
@@ -235,11 +233,11 @@ class UIE_Light_Decoder(TransformerDecoder):
             layers = self.second_stage_layers
 
         # decoder layers
-        for layer in layers[:early_exit]:
+        for layer in layers:
             x, attn = layer(
                 x,
-                encoder_out['encoder_out'] if encoder_out is not None else None,
-                encoder_out['encoder_padding_mask'] if encoder_out is not None else None,
+                encoder_out.encoder_out if encoder_out is not None else None,
+                encoder_out.encoder_padding_mask if encoder_out is not None else None,
                 incremental_state,
                 self_attn_mask=self_attn_mask,
                 ngram_mask_matrix=None,
@@ -258,105 +256,116 @@ class UIE_Light_Decoder(TransformerDecoder):
 
         return x.transpose(0, 1), {'attn': attn_list}
 
-    def extract_features_AR(
-            self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None,
-            stage='event', **unused
+    def forward(
+            self,
+            prev_output_tokens,
+            encoder_out=None,
+            incremental_state=None,
+            features_only=False,
+            **extra_args
     ):
-        if 'positions' in unused:
-            # pretrain procedure
-            main_stream_pos_embed = self.embed_positions._forward(unused['positions'])
-            real_positions = unused['positions']
-            i_buckets_main_stream, i_bucket_relative_stream = \
-                self.cal_pretrain_relative_positions(real_positions)
-        else:
-            # fine tune procedure
-            main_stream_pos_embed, real_positions = self.embed_positions(
-                prev_output_tokens,
-                incremental_state=incremental_state,
-            ) if self.embed_positions is not None else None
-            if incremental_state is not None:
-                i_buckets_main_stream, i_bucket_relative_stream = None, None
-            else:
-                i_buckets_main_stream, i_bucket_relative_stream = \
-                    self.cal_finetune_relative_positions(real_positions)
+        x, extra = self.extract_features_NAR(prev_output_tokens, encoder_out=encoder_out, )
+        return self.output_layer(x), extra
 
-        predicting_stream_pos_embed = self.embed_positions._forward(real_positions + 1)
-
-        if incremental_state is not None:
-            prev_output_tokens = prev_output_tokens[:, -1:]
-            if main_stream_pos_embed is not None:
-                main_stream_pos_embed = main_stream_pos_embed[:, -1:]
-
-        x = self.embed_tokens(prev_output_tokens)
-        # embed tokens and positions
-        if self.embed_scale is not None:
-            x *= self.embed_scale
-
-        if main_stream_pos_embed is not None:
-            x += main_stream_pos_embed
-
-        # B x T x C -> T x B x C
-        x = x.transpose(0, 1)
-        attn = None
-
-        inner_states = [x]
-        if main_stream_pos_embed is None:
-            print('positions should be used to predict ngrams')
-            raise Exception()
-
-        if self.embed_scale is not None:
-            ngram_input_embed = self.embed_scale * self.ngram_input_embed.weight
-        else:
-            ngram_input_embed = self.ngram_input_embed.weight
-
-        if incremental_state is not None:
-            B = x.size(1)
-            ngram_masks = [
-                (ngram_input_embed[0] + predicting_stream_pos_embed).transpose(0, 1).repeat(1, B, 1)
-                for ngram in range(self.ngram)]
-        else:
-            ngram_masks = [(ngram_input_embed[0] + predicting_stream_pos_embed).transpose(0, 1) for
-                           ngram in range(self.ngram)]
-
-        self_attn_mask = self.buffered_future_mask(x) if incremental_state is None else None
-        ngram_mask_matrix = self.buffered_future_mask_ngram(x) if incremental_state is None else None
-
-        # TODO in train [(1+ngram)*T, B, C], in inference [T+ngram, B, C]
-        x = torch.cat([x] + ngram_masks, 0)
-
-        if self.emb_layer_norm:
-            x = self.emb_layer_norm(x)
-
-        x = F.dropout(x, p=self.dropout, training=self.training)
-
-        layers = self.layers
-        if stage == 'argument' and not self.share_stage_layers:
-            layers = self.second_stage_layers
-
-        # decoder layers
-        for layer in layers[:early_exit]:
-            x, attn = layer(
-                x,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                ngram_mask_matrix=ngram_mask_matrix,
-                i_buckets_main_stream=i_buckets_main_stream,
-                i_bucket_relative_stream=i_bucket_relative_stream,
-                real_positions=real_positions,
-                flag_AR=True
-            )
-            inner_states.append(x)
-
-        # TODO [(1+ngram)*T, B, C] -> [B, (1+ngram)*T, C]
-        x_list = x.transpose(0, 1).chunk(1 + self.ngram, 1)
-        if attn is not None:
-            attn_list = attn.transpose(0, 1).chunk(1 + self.ngram, 1)
-        else:
-            attn_list = None
-
-        return x_list[-1], {'attn': attn_list}
+    # def extract_features_AR(
+    #         self, prev_output_tokens, encoder_out=None, early_exit=None, layers=None, incremental_state=None,
+    #         stage='event', **unused
+    # ):
+    #     if 'positions' in unused:
+    #         # pretrain procedure
+    #         main_stream_pos_embed = self.embed_positions._forward(unused['positions'])
+    #         real_positions = unused['positions']
+    #         i_buckets_main_stream, i_bucket_relative_stream = \
+    #             self.cal_pretrain_relative_positions(real_positions)
+    #     else:
+    #         # fine tune procedure
+    #         main_stream_pos_embed, real_positions = self.embed_positions(
+    #             prev_output_tokens,
+    #             incremental_state=incremental_state,
+    #         ) if self.embed_positions is not None else None
+    #         if incremental_state is not None:
+    #             i_buckets_main_stream, i_bucket_relative_stream = None, None
+    #         else:
+    #             i_buckets_main_stream, i_bucket_relative_stream = \
+    #                 self.cal_finetune_relative_positions(real_positions)
+    #
+    #     predicting_stream_pos_embed = self.embed_positions._forward(real_positions + 1)
+    #
+    #     if incremental_state is not None:
+    #         prev_output_tokens = prev_output_tokens[:, -1:]
+    #         if main_stream_pos_embed is not None:
+    #             main_stream_pos_embed = main_stream_pos_embed[:, -1:]
+    #
+    #     x = self.embed_tokens(prev_output_tokens)
+    #     # embed tokens and positions
+    #     if self.embed_scale is not None:
+    #         x *= self.embed_scale
+    #
+    #     if main_stream_pos_embed is not None:
+    #         x += main_stream_pos_embed
+    #
+    #     # B x T x C -> T x B x C
+    #     x = x.transpose(0, 1)
+    #     attn = None
+    #
+    #     inner_states = [x]
+    #     if main_stream_pos_embed is None:
+    #         print('positions should be used to predict ngrams')
+    #         raise Exception()
+    #
+    #     if self.embed_scale is not None:
+    #         ngram_input_embed = self.embed_scale * self.ngram_input_embed.weight
+    #     else:
+    #         ngram_input_embed = self.ngram_input_embed.weight
+    #
+    #     if incremental_state is not None:
+    #         B = x.size(1)
+    #         ngram_masks = [
+    #             (ngram_input_embed[0] + predicting_stream_pos_embed).transpose(0, 1).repeat(1, B, 1)
+    #             for ngram in range(self.ngram)]
+    #     else:
+    #         ngram_masks = [(ngram_input_embed[0] + predicting_stream_pos_embed).transpose(0, 1) for
+    #                        ngram in range(self.ngram)]
+    #
+    #     self_attn_mask = self.buffered_future_mask(x) if incremental_state is None else None
+    #     ngram_mask_matrix = self.buffered_future_mask_ngram(x) if incremental_state is None else None
+    #
+    #     # TODO in train [(1+ngram)*T, B, C], in inference [T+ngram, B, C]
+    #     x = torch.cat([x] + ngram_masks, 0)
+    #
+    #     if self.emb_layer_norm:
+    #         x = self.emb_layer_norm(x)
+    #
+    #     x = F.dropout(x, p=self.dropout, training=self.training)
+    #
+    #     layers = self.layers
+    #     if stage == 'argument' and not self.share_stage_layers:
+    #         layers = self.second_stage_layers
+    #
+    #     # decoder layers
+    #     for layer in layers:
+    #         x, attn = layer(
+    #             x,
+    #             encoder_out.encoder_out if encoder_out is not None else None,
+    #             encoder_out.encoder_padding_mask if encoder_out is not None else None,
+    #             incremental_state,
+    #             self_attn_mask=self_attn_mask,
+    #             ngram_mask_matrix=ngram_mask_matrix,
+    #             i_buckets_main_stream=i_buckets_main_stream,
+    #             i_bucket_relative_stream=i_bucket_relative_stream,
+    #             real_positions=real_positions,
+    #             flag_AR=True
+    #         )
+    #         inner_states.append(x)
+    #
+    #     # TODO [(1+ngram)*T, B, C] -> [B, (1+ngram)*T, C]
+    #     x_list = x.transpose(0, 1).chunk(1 + self.ngram, 1)
+    #     if attn is not None:
+    #         attn_list = attn.transpose(0, 1).chunk(1 + self.ngram, 1)
+    #     else:
+    #         attn_list = None
+    #
+    #     return x_list[-1], {'attn': attn_list}
 
     def forward_mask_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=True, stage='event', **unused):
         if NAR_Flag:
@@ -397,3 +406,16 @@ class UIE_Light_Decoder(TransformerDecoder):
                                                        incremental_state=None, **unused)
 
         return F.linear(features, self.embed_word_del.weight), extra['attn']
+
+    def output_layer(self, features, **kwargs):
+        """Project features to the vocabulary size."""
+        if self.share_input_output_embed:
+            return F.linear(features, self.embed_tokens.weight)
+        else:
+            return F.linear(features, self.embed_out)
+
+    def max_positions(self):
+        """Maximum output length supported by the decoder."""
+        if self.embed_positions is None:
+            return self.max_target_positions
+        return min(self.max_target_positions, self.embed_positions.max_positions())

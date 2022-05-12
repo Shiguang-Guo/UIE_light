@@ -227,15 +227,20 @@ class UIELightGenerator(object):
         with torch.no_grad():
             encoder_out = model.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
             bsz = src_tokens.size(0)
-            src_lens = src_tokens.size(1)
-            max_lens = torch.tensor(src_lens * self.len_ratio + 2).clamp(min=10).long()
+
+            if encoder_out.encoder_padding_mask is None:
+                max_src_len = encoder_out.encoder_out.size(1)
+                src_lens = encoder_out.encoder_out.new(bsz).fill_(max_src_len)
+            else:
+                src_lens = (~encoder_out.encoder_padding_mask).sum(1)
+            max_lens = (src_lens * self.len_ratio + 2).clamp(min=10).long()
             plc_ins_len = torch.full_like(max_lens, self.max_ins_len)
 
             prev_tokens = self.make_emptyes(sample['target'], max_lens.max())
             scores = src_tokens.new(bsz, max_lens.max()).float().fill_(0)
 
-            for stage in ['event', 'argument']:
-                # for stage in ['event']:
+            # for stage in ['event', 'argument']:
+            for stage in ['event']:
                 can_del_word = prev_tokens.ne(self.pad).sum(1) > 2
                 if can_del_word.sum() != 0:  # we cannot delete, skip
                     word_del_out, word_del_attn = model.decoder.forward_word_del(
@@ -270,7 +275,7 @@ class UIELightGenerator(object):
                         mask_ins_score[:, :, 0] = mask_ins_score[:, :, 0] - self.eos_penalty
                     mask_ins_pred = mask_ins_score.max(-1)[1]
                     mask_ins_pred = torch.min(
-                        mask_ins_pred, plc_ins_len
+                        mask_ins_pred, plc_ins_len[can_ins_mask, None].expand_as(mask_ins_pred)
                     )
 
                     _tokens, _scores = _apply_ins_masks(
