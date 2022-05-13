@@ -372,42 +372,92 @@ class UIELightNAR(TransformerModel):
     @staticmethod
     def add_args(parser):
         TransformerModel.add_args(parser)
-        parser.add_argument(
-            "--apply-bert-init",
-            action="store_true",
-            help="use custom param initialization for BERT",
-        )
-        parser.add_argument(
-            "--early-exit",
-            default="4,5,6",
-            type=str,
-            help="number of decoder layers before word_del, mask_ins, word_ins",
-        )
-        parser.add_argument(
-            "--first-stage-nar",
-            default=True,
-            type=bool
-        )
-        parser.add_argument(
-            "--second-stage-nar",
-            default=True,
-            type=bool
-        )
-        parser.add_argument(
-            "--share-stage-layers",
-            default=False,
-            type=bool
-        )
+        parser.add_argument("--apply-bert-init", action="store_true", help="use custom param initialization for BERT", )
+        parser.add_argument('--load-from-pretrained-model', type=str, default=None, help='Load from pretrained model')
+        parser.add_argument("--early-exit", default="4,5,6", type=str,
+                            help="number of decoder layers before word_del, mask_ins, word_ins", )
+        parser.add_argument("--first-stage-nar", default=True, type=bool)
+        parser.add_argument("--second-stage-nar", default=True, type=bool)
+        parser.add_argument("--share-stage-layers", default=True, type=bool)
 
     @classmethod
-    def build_decoder(cls, args, tgt_dict, embed_tokens):
-        decoder = UIE_Light_Decoder(args, tgt_dict, embed_tokens)
-        return decoder
+    def build_model(cls, args, task):
+        """Build a new model instance."""
 
-    @classmethod
-    def build_encoder(cls, args, src_dict, embed_tokens):
-        encoder = TransformerEncoder(args, src_dict, embed_tokens)
-        return encoder
+        # make sure all arguments are present in older models
+        base_architecture(args)
+
+        if getattr(args, 'max_source_positions', None) is None:
+            args.max_source_positions = DEFAULT_MAX_SOURCE_POSITIONS
+        if getattr(args, 'max_target_positions', None) is None:
+            args.max_target_positions = DEFAULT_MAX_TARGET_POSITIONS
+
+        src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
+
+        def build_embedding(dictionary, embed_dim):
+            num_embeddings = len(dictionary)
+            padding_idx = dictionary.pad()
+            emb = Embedding(num_embeddings, embed_dim, padding_idx)
+            return emb
+
+        if args.share_all_embeddings:
+            if src_dict != tgt_dict:
+                raise ValueError('--share-all-embeddings requires a joined dictionary')
+            if args.encoder_embed_dim != args.decoder_embed_dim:
+                raise ValueError(
+                    '--share-all-embeddings requires --encoder-embed-dim to match --decoder-embed-dim')
+            encoder_embed_tokens = build_embedding(
+                src_dict, args.encoder_embed_dim
+            )
+            decoder_embed_tokens = encoder_embed_tokens
+            args.share_decoder_input_output_embed = True
+        else:
+            encoder_embed_tokens = build_embedding(
+                src_dict, args.encoder_embed_dim
+            )
+            decoder_embed_tokens = build_embedding(
+                tgt_dict, args.decoder_embed_dim
+            )
+
+        encoder = TransformerEncoder(args, src_dict, encoder_embed_tokens)
+        decoder = UIE_Light_Decoder(args, tgt_dict, decoder_embed_tokens)
+        model = UIELightNAR(args, encoder, decoder)
+
+        if args.load_from_pretrained_model is not None:
+            states = torch.load(args.load_from_pretrained_model, map_location='cpu')
+            if 'model' in states and 'args' in states:
+                states = states['model']
+            if args.load_sep:
+                encoder_token_weight = states['encoder.embed_tokens.weight']
+                decoder_token_weight = states['decoder.embed_tokens.weight']
+                encoder_token_weight[2] = encoder_token_weight[102]
+                decoder_token_weight[2] = decoder_token_weight[102]
+                states['encoder.embed_tokens.weight'] = encoder_token_weight
+                states['decoder.embed_tokens.weight'] = decoder_token_weight
+            for position_name, target_position_length in [
+                ('encoder.embed_positions.weight', model.encoder.embed_positions.weight.size(0)),
+                ('decoder.embed_positions.weight', model.decoder.embed_positions.weight.size(0))]:
+                if states[position_name].size(0) < target_position_length:
+                    _index = torch.arange(states[position_name].size(1))
+                    expend_position_states = states[position_name].clone()
+                    while states[position_name].size(0) < target_position_length:
+                        _index = torch.cat((_index[1:], _index[:1]), dim=0)
+                        states[position_name] = torch.cat([states[position_name], expend_position_states[:, _index]],
+                                                          dim=0)
+                if states[position_name].size(0) > target_position_length:
+                    states[position_name] = states[position_name][:target_position_length]
+            if states['decoder.ngram_input_embed.weight'].size(0) == 2:
+                states['decoder.ngram_input_embed.weight'] = states['decoder.ngram_input_embed.weight'][1:2, :]
+            if not args.share_stage_layers:
+                for k, v in list(states.items()):
+                    if k.startswith('decoder.layers'):
+                        states[k.replace('decoder.layers', 'decoder.second_stage_layers')] = v
+            states['decoder.embed_mask_ins.weight'] = Embedding(64, args.decoder_embed_dim * 2, None).weight
+            states['decoder.embed_word_del.weight'] = Embedding(2, args.decoder_embed_dim, None).weight
+            model.load_state_dict(states)
+            args.load_from_pretrained_model = None  # Clear this param
+
+        return UIELightNAR(args, encoder, decoder)
 
     def forward(self, src_tokens=None, src_lengths=None, empty_tokens=None, event_only_tokens=None,
                 include_arguments_tokens=None, **kwargs):
@@ -473,24 +523,28 @@ def base_architecture(args):
     args.num_buckets = getattr(args, 'num_buckets', 32)
     args.relative_max_distance = getattr(args, 'relative_max_distance', 128)
 
-    args.activation_fn = getattr(args, 'activation_fn', 'relu')
-    args.dropout = getattr(args, 'dropout', 0.1)
-    args.attention_dropout = getattr(args, 'attention_dropout', 0.)
-    args.activation_dropout = getattr(args, 'activation_dropout', 0.)
-
-    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 512)
-    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 2048)
+    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 768)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 3072)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 12)
     args.encoder_layers = getattr(args, 'encoder_layers', 6)
-    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 8)
 
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 2048)
+    args.dropout = getattr(args, 'dropout', 0.1)
+    args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
+    args.activation_dropout = getattr(args, 'activation_dropout', 0.1)
+    args.activation_fn = getattr(args, 'activation_fn', 'gelu')
+
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 768)
+    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 3072)
+    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 12)
     args.decoder_layers = getattr(args, 'decoder_layers', 6)
-    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
 
-    args.share_decoder_input_output_embed = getattr(args, 'share_decoder_input_output_embed', False)
-    args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
+    # args.share_decoder_input_output_embed = getattr(args, 'share_decoder_input_output_embed', False)
+    # args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.load_sep = getattr(args, 'load_sep', False)
 
-    args.first_stage_nar = getattr(args, '--first-stage-nar', True)
-    args.second_stage_nar = getattr(args, '--second-stage-nar', True)
+    args.share_decoder_input_output_embed = getattr(args, 'share_decoder_input_output_embed', True)
+    args.share_all_embeddings = getattr(args, 'share_all_embeddings', True)
+    # base_architecture(args)
+
+    args.first_stage_nar = getattr(args, '--first-stage-ar', True)
+    args.second_stage_nar = getattr(args, '--second-stage-ar', True)

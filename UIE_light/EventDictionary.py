@@ -44,8 +44,8 @@ class EventDictionary(Dictionary):
         span_bos = '<extra_id_0>'
         span_eos = '<extra_id_1>'
         span_delimiter = '<extra_id_5>'
-        span_placeholder = '<span_plh>'
-        event_placeholder = '<event_plh>'
+        # span_placeholder = '<span_plh>'
+        # event_placeholder = '<event_plh>'
 
         d.bos_index = d.add_symbol('[CLS]')
         d.pad_index = d.add_symbol('[PAD]')
@@ -54,8 +54,8 @@ class EventDictionary(Dictionary):
         d.span_bos_index = d.add_symbol(span_bos)
         d.span_eos_index = d.add_symbol(span_eos)
         d.span_delimiter_index = d.add_symbol(span_delimiter)
-        d.span_placeholder_index = d.add_symbol(span_placeholder)
-        d.event_placeholder_index = d.add_symbol(event_placeholder)
+        # d.span_placeholder_index = d.add_symbol(span_placeholder)
+        # d.event_placeholder_index = d.add_symbol(event_placeholder)
 
         d.nspecial = 999
         return d
@@ -73,9 +73,9 @@ class EventDictionary(Dictionary):
 
     def span_eos(self):
         return self.span_eos_index
-
-    def span_placeholder(self):
-        return self.span_placeholder_index
-
-    def event_placeholder(self):
-        return self.event_placeholder_index
+    #
+    # def span_placeholder(self):
+    #     return self.span_placeholder_index
+    #
+    # def event_placeholder(self):
+    #     return self.event_placeholder_index

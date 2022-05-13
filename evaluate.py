@@ -26,6 +26,6 @@ def evaluate(schemapath, filepath):
 
 if __name__ == '__main__':
     schemapath = '/data/guoshiguang/datasets/dyiepp_ace2005_subtype_converted/raw/event.schema'
-    filepath = "/data/guoshiguang/outputs/bang/ace2005-full-nar-2stages-0/second"
+    filepath = "/data/guoshiguang/outputs/uie_light/ace2005-full-uie-light-v11/"
 
     print(evaluate(schemapath=schemapath, filepath=filepath))

@@ -8,8 +8,8 @@ import math
 
 import torch
 from fairseq import utils
+from fairseq.models import FairseqIncrementalDecoder
 from fairseq.models.transformer import Embedding
-from fairseq.models.transformer import TransformerDecoder
 from fairseq.modules import LayerNorm
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from torch import nn as nn
@@ -20,11 +20,11 @@ from UIE_light.learned_positional_embedding import LearnedPositionalEmbedding
 from UIE_light.ngram_multihead_attention_AR_NAR_mixed import ngram_attention_bias
 
 
-class UIE_Light_Decoder(TransformerDecoder):
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
-        super().__init__(
-            args, dictionary, embed_tokens, no_encoder_attn=no_encoder_attn
-        )
+class UIE_Light_Decoder(FairseqIncrementalDecoder):
+    def __init__(self, args, dictionary, embed_tokens):
+        super().__init__(dictionary)
+
+        self.output_embed_dim = args.decoder_embed_dim
         self.embed_mask_ins = Embedding(64, self.output_embed_dim * 2, None)
         self.embed_word_del = Embedding(2, self.output_embed_dim, None)
         self.early_exit = [int(i) for i in args.early_exit.split(',')]
@@ -357,6 +357,14 @@ class UIE_Light_Decoder(TransformerDecoder):
             attn_list = None
 
         return x_list[-1], {'attn': attn_list}
+
+    def output_layer(self, features, **kwargs):
+        """Project features to the vocabulary size."""
+        # project back to size of vocabulary
+        if self.share_input_output_embed:
+            return F.linear(features, self.embed_tokens.weight)
+        else:
+            return F.linear(features, self.embed_out)
 
     def forward_mask_ins(self, prev_output_tokens, encoder_out=None, NAR_Flag=True, stage='event', **unused):
         if NAR_Flag:

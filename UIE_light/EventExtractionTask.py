@@ -55,9 +55,6 @@ class EventExtractionTask(TranslationTask):
         span_eos = self.tgt_dict.span_eos()
         bos = self.tgt_dict.bos()
         eos = self.tgt_dict.eos()
-        delimiter = self.tgt_dict.delimiter()
-        span_placeholder = self.tgt_dict.span_placeholder()
-        event_placeholder = self.tgt_dict.event_placeholder()
 
         max_len = tokens.size(1)
         tokens_list = [[t for t in s if t != pad] for s in tokens.tolist()]
