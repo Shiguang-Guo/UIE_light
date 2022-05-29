@@ -182,12 +182,10 @@ class UIELightLoss(FairseqCriterion):
         else:
             log_outputs = F.log_softmax(outputs_masked, dim=-1)
             losses = F.nll_loss(log_outputs, targets_masked.to(log_outputs.device), reduction='none')
-            losses = losses.sum(-1)
 
             nll_loss = mean_ds(losses)
             if label_smoothing > 0:
-                loss = nll_loss * (
-                        1 - label_smoothing) - mean_ds(log_outputs) * label_smoothing
+                loss = nll_loss * (1 - label_smoothing) - mean_ds(log_outputs) * label_smoothing
             else:
                 loss = nll_loss
         loss_dict = {"name": name, "loss": loss, "nll_loss": nll_loss}

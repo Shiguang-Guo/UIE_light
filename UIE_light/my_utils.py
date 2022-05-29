@@ -229,3 +229,4 @@ def post_process_nar(raw_output):
                 words_filtered.append(w)
         result.append(' '.join(words_filtered))
     return result
+

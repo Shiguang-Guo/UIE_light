@@ -4,6 +4,7 @@
 @file: UIELightGenerator.py
 @time: 2022/5/5 21:47
 """
+import copy
 
 import torch
 import torch.nn.functional as F
@@ -40,7 +41,24 @@ def _skip_encoder_out(encoder, encoder_out, mask):
     if not mask.any():
         return encoder_out
     else:
-        return encoder.reorder_encoder_out(encoder_out, mask.nonzero().squeeze())
+        return reorder_encoder_out(encoder_out, mask.nonzero().squeeze())
+
+
+def reorder_encoder_out(encoder_out, new_order):
+    """
+    Reorder encoder output according to *new_order*.
+    Args:
+        encoder_out: output from the ``forward()`` method
+        new_order (LongTensor): desired order
+    Returns:
+        *encoder_out* rearranged according to *new_order*
+    """
+    if encoder_out['encoder_out'] is not None:
+        encoder_out['encoder_out'] = encoder_out['encoder_out'].index_select(1, new_order)
+    if encoder_out['encoder_padding_mask'] is not None:
+        encoder_out['encoder_padding_mask'] = \
+            encoder_out['encoder_padding_mask'].index_select(0, new_order)
+    return encoder_out
 
 
 def _fill(x, mask, y, padding_idx):
@@ -228,7 +246,7 @@ class UIELightGenerator(object):
             encoder_out = model.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
             bsz = src_tokens.size(0)
             src_lens = src_tokens.size(1)
-            max_lens = torch.tensor(src_lens * self.len_ratio + 2).clamp(min=10).long()
+            max_lens = torch.tensor(src_lens * self.len_ratio + 2).clamp(min=10, max=512).long()
             plc_ins_len = torch.full_like(max_lens, self.max_ins_len)
 
             prev_tokens = self.make_emptyes(sample['target'], max_lens.max())
@@ -236,33 +254,11 @@ class UIELightGenerator(object):
 
             for stage in ['event', 'argument']:
                 # for stage in ['event']:
-                can_del_word = prev_tokens.ne(self.pad).sum(1) > 2
-                if can_del_word.sum() != 0:  # we cannot delete, skip
-                    word_del_out, word_del_attn = model.decoder.forward_word_del(
-                        _skip(prev_tokens, can_del_word),
-                        _skip_encoder_out(model.encoder, encoder_out, can_del_word),
-                        stage=stage
-                    )
-                    word_del_score = F.log_softmax(word_del_out, 2)
-                    word_del_pred = word_del_score.max(-1)[1].bool()
-
-                    _tokens, _scores = _apply_del_words(
-                        prev_tokens[can_del_word],
-                        scores[can_del_word],
-                        word_del_pred,
-                        self.pad,
-                        self.bos,
-                        self.eos,
-                    )
-                    prev_tokens = _fill(prev_tokens, can_del_word, _tokens, self.pad)
-                    scores = _fill(scores, can_del_word, _scores, 0)
-
-                # insert placeholders
                 can_ins_mask = prev_tokens.ne(self.pad).sum(1) < max_lens
                 if can_ins_mask.sum() != 0:
                     mask_ins_out, _ = model.decoder.forward_mask_ins(
                         _skip(prev_tokens, can_ins_mask),
-                        _skip_encoder_out(model.encoder, encoder_out, can_ins_mask),
+                        _skip_encoder_out(model.encoder, copy.deepcopy(encoder_out), can_ins_mask),
                         stage=stage
                     )
                     mask_ins_score = F.log_softmax(mask_ins_out, 2)
@@ -289,7 +285,7 @@ class UIELightGenerator(object):
                 if can_ins_word.sum() != 0:
                     word_ins_out, word_ins_attn = model.decoder.forward_word_ins(
                         _skip(prev_tokens, can_ins_word),
-                        _skip_encoder_out(model.encoder, encoder_out, can_ins_word),
+                        _skip_encoder_out(model.encoder, copy.deepcopy(encoder_out), can_ins_word),
                         stage=stage
                     )
                     word_ins_score, word_ins_pred = F.log_softmax(word_ins_out, 2).max(-1)
@@ -303,6 +299,27 @@ class UIELightGenerator(object):
 
                     prev_tokens = _fill(prev_tokens, can_ins_word, _tokens, self.pad)
                     scores = _fill(scores, can_ins_word, _scores, 0)
+
+                can_del_word = prev_tokens.ne(self.pad).sum(1) > 2
+                if can_del_word.sum() != 0:  # we cannot delete, skip
+                    word_del_out, word_del_attn = model.decoder.forward_word_del(
+                        _skip(prev_tokens, can_del_word),
+                        _skip_encoder_out(model.encoder, copy.deepcopy(encoder_out), can_del_word),
+                        stage=stage
+                    )
+                    word_del_score = F.log_softmax(word_del_out, 2)
+                    word_del_pred = word_del_score.max(-1)[1].bool()
+
+                    _tokens, _scores = _apply_del_words(
+                        prev_tokens[can_del_word],
+                        scores[can_del_word],
+                        word_del_pred,
+                        self.pad,
+                        self.bos,
+                        self.eos,
+                    )
+                    prev_tokens = _fill(prev_tokens, can_del_word, _tokens, self.pad)
+                    scores = _fill(scores, can_del_word, _scores, 0)
 
             cut_off = prev_tokens.ne(self.pad).sum(1).max()
             prev_tokens = prev_tokens[:, :cut_off]

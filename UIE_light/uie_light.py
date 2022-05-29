@@ -343,8 +343,7 @@ class TransformerEncoder(FairseqEncoder):
             *encoder_out* rearranged according to *new_order*
         """
         if encoder_out['encoder_out'] is not None:
-            encoder_out['encoder_out'] = \
-                encoder_out['encoder_out'].index_select(1, new_order)
+            encoder_out['encoder_out'] = encoder_out['encoder_out'].index_select(1, new_order)
         if encoder_out['encoder_padding_mask'] is not None:
             encoder_out['encoder_padding_mask'] = \
                 encoder_out['encoder_padding_mask'].index_select(0, new_order)
@@ -378,7 +377,7 @@ class UIELightNAR(TransformerModel):
                             help="number of decoder layers before word_del, mask_ins, word_ins", )
         parser.add_argument("--first-stage-nar", default=True, type=bool)
         parser.add_argument("--second-stage-nar", default=True, type=bool)
-        parser.add_argument("--share-stage-layers", default=True, type=bool)
+        parser.add_argument("--share-stage-layers", action='store_true', )
 
     @classmethod
     def build_model(cls, args, task):
@@ -452,7 +451,7 @@ class UIELightNAR(TransformerModel):
                 for k, v in list(states.items()):
                     if k.startswith('decoder.layers'):
                         states[k.replace('decoder.layers', 'decoder.second_stage_layers')] = v
-            states['decoder.embed_mask_ins.weight'] = Embedding(64, args.decoder_embed_dim * 2, None).weight
+            states['decoder.embed_mask_ins.weight'] = Embedding(128, args.decoder_embed_dim * 2, None).weight
             states['decoder.embed_word_del.weight'] = Embedding(2, args.decoder_embed_dim, None).weight
             model.load_state_dict(states)
             args.load_from_pretrained_model = None  # Clear this param
@@ -471,7 +470,7 @@ class UIELightNAR(TransformerModel):
             masked_tgt_masks, masked_tgt_tokens, mask_ins_targets = _get_ins_targets(
                 prev_output_tokens, tgt_tokens, self.pad, self.unk
             )
-            mask_ins_targets = mask_ins_targets.clamp(min=0, max=255)  # for safe prediction
+            mask_ins_targets = mask_ins_targets.clamp(min=0, max=128)  # for safe prediction
             mask_ins_masks = prev_output_tokens[:, 1:].ne(self.pad)
 
             mask_ins_out, _ = self.decoder.forward_mask_ins(
@@ -546,5 +545,6 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', True)
     # base_architecture(args)
 
-    args.first_stage_nar = getattr(args, '--first-stage-ar', True)
-    args.second_stage_nar = getattr(args, '--second-stage-ar', True)
+    args.first_stage_nar = getattr(args, 'first-stage-ar', True)
+    args.second_stage_nar = getattr(args, 'second-stage-ar', True)
+    args.share_stage_layers = getattr(args, 'share_stage_layers', False)
